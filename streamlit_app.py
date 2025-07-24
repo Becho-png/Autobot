@@ -79,6 +79,7 @@ def gpt_generate_sql(user_query, schema_hint, openai_api_key):
         f"{schema_hint}\n"
         "Always return a valid SQL SELECT query using only the 'cars' table, and never use DROP, DELETE, INSERT, UPDATE, or any non-SELECT commands."
         "If a column is not specified by the user, leave it unfiltered."
+        "When filtering text columns (like brand, model, transmission, fueltype, source_file), always use ILIKE for case-insensitive matches instead of = or LIKE."
         "If the query doesn't specify a limit, use 'LIMIT 100' at the end."
     )
     resp = client.chat.completions.create(
@@ -94,17 +95,16 @@ def gpt_generate_sql(user_query, schema_hint, openai_api_key):
     if sql_match:
         sql = sql_match.group(1)
     else:
-        # fallback: try everything starting with select
         sqls = re.findall(r"select.+", sql_raw, re.IGNORECASE | re.DOTALL)
         if not sqls:
             raise ValueError("No SELECT query found in GPT output.")
         sql = sqls[0].strip()
-    # Safety: Only allow SELECT
     if not sql.lower().startswith("select"):
         raise ValueError("GPT returned a non-SELECT query. Blocked for safety.")
-    # Add LIMIT 100 if not present
     if "limit" not in sql.lower():
         sql = sql.rstrip(";") + " LIMIT 100;"
+    # This line makes LIKE case-insensitive!
+    sql = re.sub(r'\bLIKE\b', 'ILIKE', sql, flags=re.IGNORECASE)
     return sql
 
 # --- Run SQL ---
