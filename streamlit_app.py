@@ -319,7 +319,7 @@ if st.session_state.get("active_page") == "chat":
         st.session_state.last_uploaded = None
 
     uploaded_image = st.file_uploader(
-        "Upload an image(png, jpg, jpeg)",
+        "Upload an image for GPT-4o to analyze (png, jpg, jpeg)",
         type=["png", "jpg", "jpeg"], key="img-uploader"
     )
 
@@ -356,14 +356,44 @@ if st.session_state.get("active_page") == "chat":
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # 🔥 Special logic: car search or comparison
+        # --- Car Query & Smart LLM Advice ---
         answer, cars = handle_user_query(prompt)
-        with st.chat_message("assistant"):
-            st.markdown(answer)
-            if cars is not None and not cars.empty:
-                st.dataframe(cars)
+        if cars is not None and not cars.empty:
+            car_table_md = cars.to_markdown(index=False)
+            system_prompt = (
+                "You are a helpful car dealership assistant. "
+                "Based on the user's request and the list of cars, "
+                "analyze and recommend the best option(s). "
+                "Consider price, mileage, year, and general value."
+            )
+            user_prompt = f"""User asked: {prompt}
 
-        st.session_state.messages.append({"role": "assistant", "content": answer})
+Here are the matching cars:
+
+{car_table_md}
+
+Give an easy-to-understand, friendly answer highlighting the best choices, and explain why."""
+            with st.chat_message("assistant"):
+                # Use GPT-4o to explain the results and give advice
+                llm_response = client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    stream=True,
+                )
+                response = st.write_stream(llm_response)
+                # Also show the table
+                st.markdown("**Car Results:**")
+                st.dataframe(cars)
+            st.session_state.messages.append({"role": "assistant", "content": response})
+        else:
+            # If not a car search, fallback to original LLM
+            with st.chat_message("assistant"):
+                st.markdown(answer)
+            st.session_state.messages.append({"role": "assistant", "content": answer})
+
         save_chat_history(
             st.session_state["user_id"],
             st.session_state["session_id"],
