@@ -5,9 +5,9 @@ import streamlit as st
 from openai import OpenAI
 import uuid
 import base64
-
-# Auth functions (move these to auth.py if you want, or keep here)
 import hashlib
+import pandas as pd
+import re
 
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
@@ -66,7 +66,6 @@ def login_form():
                 st.rerun()
             else:
                 st.error("Invalid login.")
-# ---- Chat/Database Functions ----
 
 def get_chat_history(user_id, session_id):
     conn = psycopg2.connect(st.secrets["NEON_DB_URL"])
@@ -124,7 +123,7 @@ def fetch_all_user_history(user_id):
 
 def get_user_persona_prompt(user_id):
     history = fetch_all_user_history(user_id)
-    last_msgs = history[-5:]  # limit for brevity
+    last_msgs = history[-5:]
     example_lines = "\n".join(f"- {msg['content']}" for msg in last_msgs)
     return f"""This is a returning user. Here are recent things they have said:
 {example_lines}
@@ -133,6 +132,77 @@ When responding, consider the user's style and topics above.
 
 def image_to_base64(img_bytes):
     return base64.b64encode(img_bytes).decode("utf-8")
+
+# --- 🔥 CAR SEARCH/COMPARE HELPERS ---
+
+def query_cars(brand=None, model=None, max_price=None, n=5):
+    conn = psycopg2.connect(st.secrets["NEON_DB_URL"])
+    sql = "SELECT * FROM cars WHERE TRUE"
+    params = []
+    if brand:
+        sql += " AND LOWER(brand) LIKE %s"
+        params.append(f"%{brand.lower()}%")
+    if model:
+        sql += " AND LOWER(model) LIKE %s"
+        params.append(f"%{model.lower()}%")
+    if max_price:
+        sql += " AND price <= %s"
+        params.append(max_price)
+    sql += f" LIMIT {n}"
+    df = pd.read_sql(sql, conn, params=params)
+    conn.close()
+    return df
+
+def compare_cars(brand1, model1, brand2, model2):
+    df1 = query_cars(brand1, model1, n=1)
+    df2 = query_cars(brand2, model2, n=1)
+    if df1.empty or df2.empty:
+        return None
+    comp = pd.concat([df1, df2], keys=[f"{brand1} {model1}", f"{brand2} {model2}"])
+    return comp
+
+def handle_user_query(message):
+    # Check for comparison query
+    cmp = re.findall(r'compare ([\w ]+) and ([\w ]+)', message.lower())
+    if cmp:
+        car1, car2 = cmp[0]
+        # Heuristic split: try to get brand/model
+        parts1 = car1.strip().split(" ", 1)
+        parts2 = car2.strip().split(" ", 1)
+        if len(parts1) == 2 and len(parts2) == 2:
+            brand1, model1 = parts1
+            brand2, model2 = parts2
+            comp = compare_cars(brand1, model1, brand2, model2)
+            if comp is not None:
+                return f"Comparison for {brand1.title()} {model1.title()} vs {brand2.title()} {model2.title()}:", comp
+            else:
+                return "Sorry, could not find both cars to compare.", None
+        else:
+            return "Could not parse both brand and model for comparison.", None
+
+    # Otherwise, basic car search
+    # Try to parse brand, model, max_price
+    brand = model = None
+    price = None
+    brands = ['ford', 'audi', 'bmw', 'mercedes', 'toyota', 'skoda', 'hyundai']
+    for b in brands:
+        if b in message.lower():
+            brand = b
+            break
+    price_match = re.search(r'(\d{2,7}) ?₺?', message.replace(",", ""))
+    if price_match:
+        price = int(price_match.group(1))
+    if brand:
+        rest = message.lower().split(brand)[-1].strip()
+        model_guess = rest.split()[0] if rest.split() else None
+        if model_guess and not model_guess.isnumeric():
+            model = model_guess
+
+    df = query_cars(brand=brand, model=model, max_price=price)
+    if df.empty:
+        return "No cars found matching your query.", None
+    else:
+        return f"Found {len(df)} cars. Here are the first few:", df.head(5)
 
 # ---- Streamlit App Start ----
 
@@ -194,16 +264,15 @@ if st.session_state.get("active_page") == "chat":
             st.session_state.active_page = "select_session"
             st.rerun()
 
-    st.title("Chatbot")
+    st.title("AutoBot - Car Dealership Chat")
     st.write(f"👤 Logged in as: `{st.session_state.get('user', '')}`")
     st.write(f"💬 Session ID: `{st.session_state['session_id']}`")
 
-    # Track last uploaded image to prevent spamming
     if "last_uploaded" not in st.session_state:
         st.session_state.last_uploaded = None
 
     uploaded_image = st.file_uploader(
-        "Upload an image for GPT-4o to analyze (png, jpg, jpeg)",
+        "Upload an image(png, jpg, jpeg)",
         type=["png", "jpg", "jpeg"], key="img-uploader"
     )
 
@@ -223,6 +292,7 @@ if st.session_state.get("active_page") == "chat":
         st.session_state.last_uploaded = uploaded_image
         st.rerun()
 
+    # Show messages
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             if isinstance(message["content"], list):
@@ -234,31 +304,19 @@ if st.session_state.get("active_page") == "chat":
             else:
                 st.markdown(message["content"])
 
-    if prompt := st.chat_input("What is up?"):
+    if prompt := st.chat_input("Ask AutoBot for a car, or compare two cars (e.g. 'Compare BMW 320i and Audi A4', 'Show me Toyotas under 400000')"):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        persona_prompt = get_user_persona_prompt(st.session_state["user_id"])
-        MAX_HISTORY = 15
-        recent_msgs = st.session_state.messages[-MAX_HISTORY:]
-
-        mm_msgs = [{"role": "system", "content": persona_prompt}]
-        for msg in recent_msgs:
-            if isinstance(msg["content"], list):
-                mm_msgs.append({"role": msg["role"], "content": msg["content"]})
-            else:
-                mm_msgs.append({"role": msg["role"], "content": msg["content"]})
-
+        # 🔥 Special logic: car search or comparison
+        answer, cars = handle_user_query(prompt)
         with st.chat_message("assistant"):
-            stream = client.chat.completions.create(
-                model="gpt-4o",
-                messages=mm_msgs,
-                stream=True,
-            )
-            response = st.write_stream(stream)
+            st.markdown(answer)
+            if cars is not None and not cars.empty:
+                st.dataframe(cars)
 
-        st.session_state.messages.append({"role": "assistant", "content": response})
+        st.session_state.messages.append({"role": "assistant", "content": answer})
         save_chat_history(
             st.session_state["user_id"],
             st.session_state["session_id"],
