@@ -133,9 +133,9 @@ When responding, consider the user's style and topics above.
 def image_to_base64(img_bytes):
     return base64.b64encode(img_bytes).decode("utf-8")
 
-# --- 🔥 CAR SEARCH/COMPARE HELPERS ---
+# --- Car search helpers ---
 
-def query_cars(brand=None, model=None, max_price=None, n=5):
+def query_cars(brand=None, model=None, max_price=None, max_mileage=None, min_year=None, n=5):
     conn = psycopg2.connect(st.secrets["NEON_DB_URL"])
     sql = "SELECT * FROM cars WHERE TRUE"
     params = []
@@ -148,7 +148,13 @@ def query_cars(brand=None, model=None, max_price=None, n=5):
     if max_price:
         sql += " AND price <= %s"
         params.append(max_price)
-    sql += f" LIMIT {n}"
+    if max_mileage:
+        sql += " AND mileage <= %s"
+        params.append(max_mileage)
+    if min_year:
+        sql += " AND year >= %s"
+        params.append(min_year)
+    sql += f" ORDER BY price ASC LIMIT {n}"
     df = pd.read_sql(sql, conn, params=params)
     conn.close()
     return df
@@ -210,47 +216,6 @@ def handle_user_query(message):
         summary += ". Here are the first few:"
         return summary, df.head(5)
 
-    # Otherwise, basic car search
-    # Try to parse brand, model, max_price
-    brand = model = None
-    price = None
-    brands = ['ford', 'audi', 'bmw', 'mercedes', 'toyota', 'skoda', 'hyundai']
-    for b in brands:
-        if b in message.lower():
-            brand = b
-            break
-    price_match = re.search(r'(\d{2,7}) ?₺?', message.replace(",", ""))
-    if price_match:
-        price = int(price_match.group(1))
-    if brand:
-        rest = message.lower().split(brand)[-1].strip()
-        model_guess = rest.split()[0] if rest.split() else None
-        if model_guess and not model_guess.isnumeric():
-            model = model_guess
-
-    def query_cars(brand=None, model=None, max_price=None, max_mileage=None, min_year=None, n=5):
-    conn = psycopg2.connect(st.secrets["NEON_DB_URL"])
-    sql = "SELECT * FROM cars WHERE TRUE"
-    params = []
-    if brand:
-        sql += " AND LOWER(brand) LIKE %s"
-        params.append(f"%{brand.lower()}%")
-    if model:
-        sql += " AND LOWER(model) LIKE %s"
-        params.append(f"%{model.lower()}%")
-    if max_price:
-        sql += " AND price <= %s"
-        params.append(max_price)
-    if max_mileage:
-        sql += " AND mileage <= %s"
-        params.append(max_mileage)
-    if min_year:
-        sql += " AND year >= %s"
-        params.append(min_year)
-    sql += f" ORDER BY price ASC LIMIT {n}"
-    df = pd.read_sql(sql, conn, params=params)
-    conn.close()
-    return df
 # ---- Streamlit App Start ----
 
 if "user_id" not in st.session_state:
@@ -374,7 +339,6 @@ Here are the matching cars:
 
 Give an easy-to-understand, friendly answer highlighting the best choices, and explain why."""
             with st.chat_message("assistant"):
-                # Use GPT-4o to explain the results and give advice
                 llm_response = client.chat.completions.create(
                     model="gpt-4o",
                     messages=[
@@ -384,12 +348,10 @@ Give an easy-to-understand, friendly answer highlighting the best choices, and e
                     stream=True,
                 )
                 response = st.write_stream(llm_response)
-                # Also show the table
                 st.markdown("**Car Results:**")
                 st.dataframe(cars)
             st.session_state.messages.append({"role": "assistant", "content": response})
         else:
-            # If not a car search, fallback to original LLM
             with st.chat_message("assistant"):
                 st.markdown(answer)
             st.session_state.messages.append({"role": "assistant", "content": answer})
