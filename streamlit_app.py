@@ -162,23 +162,53 @@ def compare_cars(brand1, model1, brand2, model2):
     return comp
 
 def handle_user_query(message):
-    # Check for comparison query
-    cmp = re.findall(r'compare ([\w ]+) and ([\w ]+)', message.lower())
-    if cmp:
-        car1, car2 = cmp[0]
-        # Heuristic split: try to get brand/model
-        parts1 = car1.strip().split(" ", 1)
-        parts2 = car2.strip().split(" ", 1)
-        if len(parts1) == 2 and len(parts2) == 2:
-            brand1, model1 = parts1
-            brand2, model2 = parts2
-            comp = compare_cars(brand1, model1, brand2, model2)
-            if comp is not None:
-                return f"Comparison for {brand1.title()} {model1.title()} vs {brand2.title()} {model2.title()}:", comp
-            else:
-                return "Sorry, could not find both cars to compare.", None
-        else:
-            return "Could not parse both brand and model for comparison.", None
+    brands = ['ford', 'audi', 'bmw', 'mercedes', 'toyota', 'skoda', 'hyundai']
+    brand = None
+    model = None
+    price = None
+    mileage = None
+    year = None
+
+    # Parse brand
+    for b in brands:
+        if b in message.lower():
+            brand = b
+            break
+
+    # Price
+    price_match = re.search(r'(?:under|below|less than)? ?(\d{2,7}) ?₺?', message.replace(",", ""))
+    if price_match:
+        price = int(price_match.group(1))
+
+    # Mileage
+    mileage_match = re.search(r'(?:under|below|less than)? ?(\d{2,7}) ?km', message.replace(",", ""))
+    if mileage_match:
+        mileage = int(mileage_match.group(1))
+
+    # Year
+    year_match = re.search(r'(?:from|after|since)? ?(20\d{2}|19\d{2})', message)
+    if year_match:
+        year = int(year_match.group(1))
+
+    # Model
+    if brand:
+        rest = message.lower().split(brand)[-1].strip()
+        model_guess = rest.split()[0] if rest.split() else None
+        if model_guess and not model_guess.isnumeric():
+            model = model_guess
+
+    df = query_cars(brand=brand, model=model, max_price=price, max_mileage=mileage, min_year=year)
+    if df.empty:
+        return "No cars found matching your query.", None
+    else:
+        summary = f"Found {len(df)} cars"
+        if brand: summary += f" for {brand.title()}"
+        if model: summary += f" {model.title()}"
+        if price: summary += f" under {price}₺"
+        if mileage: summary += f" with mileage under {mileage}km"
+        if year: summary += f" from {year} or newer"
+        summary += ". Here are the first few:"
+        return summary, df.head(5)
 
     # Otherwise, basic car search
     # Try to parse brand, model, max_price
@@ -198,12 +228,29 @@ def handle_user_query(message):
         if model_guess and not model_guess.isnumeric():
             model = model_guess
 
-    df = query_cars(brand=brand, model=model, max_price=price)
-    if df.empty:
-        return "No cars found matching your query.", None
-    else:
-        return f"Found {len(df)} cars. Here are the first few:", df.head(5)
-
+    def query_cars(brand=None, model=None, max_price=None, max_mileage=None, min_year=None, n=5):
+    conn = psycopg2.connect(st.secrets["NEON_DB_URL"])
+    sql = "SELECT * FROM cars WHERE TRUE"
+    params = []
+    if brand:
+        sql += " AND LOWER(brand) LIKE %s"
+        params.append(f"%{brand.lower()}%")
+    if model:
+        sql += " AND LOWER(model) LIKE %s"
+        params.append(f"%{model.lower()}%")
+    if max_price:
+        sql += " AND price <= %s"
+        params.append(max_price)
+    if max_mileage:
+        sql += " AND mileage <= %s"
+        params.append(max_mileage)
+    if min_year:
+        sql += " AND year >= %s"
+        params.append(min_year)
+    sql += f" ORDER BY price ASC LIMIT {n}"
+    df = pd.read_sql(sql, conn, params=params)
+    conn.close()
+    return df
 # ---- Streamlit App Start ----
 
 if "user_id" not in st.session_state:
