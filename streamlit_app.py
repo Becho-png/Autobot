@@ -3,14 +3,20 @@ import psycopg2
 import os
 from openai import OpenAI
 import re
-
-# Auth (if needed)
 import hashlib
 import uuid
+import pandas as pd
 
+# --- CACHED DB CONNECTION (Neon/Postgres) ---
+@st.cache_resource
+def get_connection():
+    return psycopg2.connect(st.secrets["NEON_DB_URL"])
+
+# --- Password Hashing ---
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
+# --- Login/Register Form ---
 def login_form():
     st.title("Login / Register / Anonymous")
     choice = st.radio("Choose action", ["Login", "Register", "Continue Anonymously"])
@@ -29,7 +35,7 @@ def login_form():
             if not username or not password:
                 st.error("Fill all fields")
                 return
-            conn = psycopg2.connect(st.secrets["NEON_DB_URL"])
+            conn = get_connection()
             cur = conn.cursor()
             try:
                 cur.execute(
@@ -44,12 +50,12 @@ def login_form():
                 conn.rollback()
             finally:
                 cur.close()
-                conn.close()
+            # do NOT close cached conn
         else:  # Login
             if not username or not password:
                 st.error("Fill all fields")
                 return
-            conn = psycopg2.connect(st.secrets["NEON_DB_URL"])
+            conn = get_connection()
             cur = conn.cursor()
             cur.execute(
                 "SELECT user_id, password FROM users WHERE username = %s;",
@@ -57,7 +63,6 @@ def login_form():
             )
             row = cur.fetchone()
             cur.close()
-            conn.close()
             if row and row[1] == hash_password(password):
                 st.session_state["user"] = username
                 st.session_state["user_id"] = row[0]
@@ -66,7 +71,7 @@ def login_form():
             else:
                 st.error("Invalid login.")
 
-# --- LLM-to-SQL logic ---
+# --- GPT-to-SQL Generation (with safety, markdown cleaning, limit check) ---
 def gpt_generate_sql(user_query, schema_hint, openai_api_key):
     client = OpenAI(api_key=openai_api_key)
     system_prompt = (
@@ -74,6 +79,7 @@ def gpt_generate_sql(user_query, schema_hint, openai_api_key):
         f"{schema_hint}\n"
         "Always return a valid SQL SELECT query using only the 'cars' table, and never use DROP, DELETE, INSERT, UPDATE, or any non-SELECT commands."
         "If a column is not specified by the user, leave it unfiltered."
+        "If the query doesn't specify a limit, use 'LIMIT 100' at the end."
     )
     resp = client.chat.completions.create(
         model="gpt-4o",
@@ -82,23 +88,32 @@ def gpt_generate_sql(user_query, schema_hint, openai_api_key):
             {"role": "user", "content": user_query},
         ]
     )
-    sql = resp.choices[0].message.content.strip()
-    # Remove any markdown code block ticks etc.
-    sql = re.sub(r"^```(sql)?", "", sql, flags=re.MULTILINE).replace("```", "").strip()
-    # Only allow SELECT statements for safety
+    sql_raw = resp.choices[0].message.content.strip()
+    # Remove code block and extract SELECT
+    sql_match = re.search(r"(SELECT[\s\S]+?;)", sql_raw, re.IGNORECASE)
+    if sql_match:
+        sql = sql_match.group(1)
+    else:
+        # fallback: try everything starting with select
+        sqls = re.findall(r"select.+", sql_raw, re.IGNORECASE | re.DOTALL)
+        if not sqls:
+            raise ValueError("No SELECT query found in GPT output.")
+        sql = sqls[0].strip()
+    # Safety: Only allow SELECT
     if not sql.lower().startswith("select"):
         raise ValueError("GPT returned a non-SELECT query. Blocked for safety.")
+    # Add LIMIT 100 if not present
+    if "limit" not in sql.lower():
+        sql = sql.rstrip(";") + " LIMIT 100;"
     return sql
 
+# --- Run SQL ---
 def run_sql(sql):
-    conn = psycopg2.connect(st.secrets["NEON_DB_URL"])
-    import pandas as pd
+    conn = get_connection()
     try:
         df = pd.read_sql(sql, conn)
     except Exception as e:
-        conn.close()
         raise e
-    conn.close()
     return df
 
 # --- Streamlit App ---
@@ -128,19 +143,22 @@ Columns:
 - source_file (text)
 """
 
-st.markdown("Ask me to search cars! Example: `Show me all BMWs under 500000 with less than 100000 km after 2018`.")
+st.markdown(
+    "Ask me to search cars! Example: `Show me all BMWs under 500000 with less than 100000 km after 2018`."
+)
 
 user_query = st.text_input("What kind of car do you want to search?")
 
 if user_query:
     openai_api_key = st.secrets["OPENAI_API_KEY"]
-    try:
-        sql = gpt_generate_sql(user_query, schema_hint, openai_api_key)
-        st.code(sql, language="sql")
-        df = run_sql(sql)
-        if df.empty:
-            st.warning("No cars found matching your criteria.")
-        else:
-            st.dataframe(df)
-    except Exception as e:
-        st.error(f"Query failed: {e}")
+    with st.spinner("Thinking..."):
+        try:
+            sql = gpt_generate_sql(user_query, schema_hint, openai_api_key)
+            st.code(sql, language="sql")
+            df = run_sql(sql)
+            if df.empty:
+                st.warning("No cars found matching your criteria.")
+            else:
+                st.dataframe(df.head(100))  # Only show first 100
+        except Exception as e:
+            st.error(f"Query failed: {e}")
