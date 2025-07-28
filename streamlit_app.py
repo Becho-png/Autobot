@@ -73,17 +73,17 @@ def gpt_generate_sql(history, schema_hint, openai_api_key):
     client = OpenAI(api_key=openai_api_key)
     full_query = " ".join(history)
     system_prompt = (
-    f"You are an expert at writing SQL queries for this table:\n"
-    f"{schema_hint}\n"
-    "All columns and filter values in the database are in English, except fueltype which is either 'petrol' or 'diesel'. "
-    "If the user query is in Turkish or contains Turkish car terms (like 'dizel', 'benzin', 'otomatik', 'manuel'), you must translate those values to the exact column values: "
-    "'dizel'->'diesel', 'benzin'->'petrol', 'otomatik'->'automatic', 'manuel'->'manual'. "
-    "Always use the correct column values in SQL!"
-    "When filtering text columns (like brand, model, transmission, fueltype, source_file), always use ILIKE with wildcards (e.g. %BMW%) for case-insensitive and partial matches, not just ILIKE 'value'."
-    "If a column is not specified by the user, leave it unfiltered."
-    "If the query doesn't specify a limit, use 'LIMIT 100' at the end."
-    "Return only a single SQL SELECT statement."
-)
+        f"You are an expert at writing SQL queries for this table:\n"
+        f"{schema_hint}\n"
+        "fueltype values in the database are only 'petrol' or 'diesel'. "
+        "If the user query is in Turkish or contains Turkish car terms (like 'dizel', 'benzin', 'otomatik', 'manuel'), you must translate those values to the exact column values: "
+        "'dizel'->'diesel', 'benzin'->'petrol', 'otomatik'->'automatic', 'manuel'->'manual'. "
+        "Always use the correct column values in SQL!"
+        "When filtering text columns (like brand, model, transmission, fueltype, source_file), always use ILIKE with wildcards (e.g. %BMW%) for case-insensitive and partial matches, not just ILIKE 'value'."
+        "If a column is not specified by the user, leave it unfiltered."
+        "If the query doesn't specify a limit, use 'LIMIT 100' at the end."
+        "Return only a single SQL SELECT statement."
+    )
     resp = client.chat.completions.create(
         model="gpt-4o",
         messages=[
@@ -207,12 +207,14 @@ if submitted and user_query:
         except Exception as e:
             st.error(f"Query failed: {e}")
 
-if st.session_state["last_df"] is not None:
+# Filtreli arama adımlarının tamamı burada
+while st.session_state["last_df"] is not None:
     st.code(st.session_state["last_sql"], language="sql")
     df = st.session_state["last_df"]
 
     openai_api_key = st.secrets["OPENAI_API_KEY"]
-    filter_applied = False
+    st.dataframe(df.head(100))
+
     if not df.empty:
         with st.spinner("Daha akıllı filtre önerisi hazırlanıyor..."):
             followup = gpt_generate_followup(
@@ -220,8 +222,8 @@ if st.session_state["last_df"] is not None:
             )
         if followup != "Daha fazla filtrelemeye gerek yok.":
             st.markdown(f"**AI'nin filtre sorusu:** {followup}")
-            with st.form("filter_step", clear_on_submit=True):
-                user_filter = st.text_input("Ek filtrele:", key="next_filter")
+            with st.form(f"filter_step_{len(st.session_state['query_history'])}", clear_on_submit=True):
+                user_filter = st.text_input("Ek filtrele:", key=f"{len(st.session_state['query_history'])}_next_filter")
                 filter_submitted = st.form_submit_button("Filtrele")
             if filter_submitted and user_filter:
                 st.session_state["query_history"].append(user_filter)
@@ -231,40 +233,14 @@ if st.session_state["last_df"] is not None:
                         st.session_state["last_sql"] = sql
                         df = run_sql(sql)
                         st.session_state["last_df"] = df
-                        filter_applied = True
+                        st.experimental_rerun()
                     except Exception as e:
                         st.error(f"Query failed: {e}")
+            break  # bir sonraki filtre adımına geçmek için döngüden çık
         else:
             st.success("Daha fazla filtre önerilmiyor. Arama tamamlandı.")
+            break
 
-    st.dataframe(df.head(100))
-    
-    if not df.empty:
-        car_labels = df['brand'].astype(str) + " " + df['model'].astype(str) + " (" + df['year'].astype(str) + ")"
-        selected = st.selectbox(
-            "Tahmini motor hacmi & 0-100 hızlanması görmek için aracı seç:",
-            car_labels
-        )
-        if selected:
-            sel_idx = car_labels[car_labels == selected].index[0]
-            row = df.loc[sel_idx]
-            car_desc = f"{row['brand']} {row['model']} {row['year']}"
-            prompt = (
-                f"Aşağıdaki otomobil için tahmini teknik verileri özetle, sadece gerçekçi ortalama değerlerle yanıtla:\n"
-                f"Marka ve model: {car_desc}\n"
-                f"- Motor hacmi (cc)\n"
-                f"- 0-100 km/s hızlanma süresi (sn)\n"
-                f"Sadece kısa bir tablo olarak yaz. Eğer bilgi yoksa 'Bilinmiyor' yaz."
-            )
-            client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-            with st.spinner("Tahmini teknik veriler çekiliyor..."):
-                resp = client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                gpt_out = resp.choices[0].message.content.strip()
-            st.markdown("**Tahmini teknik veriler (AI):**")
-            st.info(gpt_out)
     else:
         st.warning("Hiçbir araba bulunamadı.")
         last_sql = st.session_state["last_sql"]
@@ -294,7 +270,12 @@ if st.session_state["last_df"] is not None:
                 st.error(str(e))
         else:
             st.info("Benzer marka/model bulunamadı.")
+        break
 
+    # Tablo boşsa veya daha fazla filtre yoksa döngüyü kır
+    break
+
+# Sonuçları resetleme butonu
 if st.button("Tüm filtreleri sıfırla"):
     st.session_state["query_history"] = []
     st.session_state["last_sql"] = None
