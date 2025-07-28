@@ -69,15 +69,18 @@ def login_form():
 def gpt_generate_sql(history, schema_hint, openai_api_key):
     client = OpenAI(api_key=openai_api_key)
     full_query = " ".join(history)
-    system_prompt = (
-        f"You are an expert at writing SQL queries for this table:\n"
-        f"{schema_hint}\n"
-        "Always return a valid SQL SELECT query using only the 'cars' table, and never use DROP, DELETE, INSERT, UPDATE, or any non-SELECT commands."
-        "If a column is not specified by the user, leave it unfiltered."
-        "When filtering text columns (like brand, model, transmission, fueltype, source_file), always use ILIKE with wildcards (e.g. %BMW%) for case-insensitive and partial matches, not just ILIKE 'value'."
-        "If the query doesn't specify a limit, use 'LIMIT 100' at the end."
-        "Return only a single SQL SELECT statement."
-    )
+system_prompt = (
+    f"You are an expert at writing SQL queries for this table:\n"
+    f"{schema_hint}\n"
+    "All columns and filter values in the database are in English."
+    "If the user query is in Turkish or contains Turkish car terms (like 'dizel', 'otomatik', 'benzin', 'manuel', 'SUV', 'station', 'sedan'), you must translate those values to English column values: "
+    "'dizel'->'diesel', 'benzin'->'gasoline', 'otomatik'->'automatic', 'manuel'->'manual', 'sedan'->'sedan', 'station'->'station', 'suv'->'SUV', etc. "
+    "Always use English values in SQL!"
+    "When filtering text columns (like brand, model, transmission, fueltype, source_file), always use ILIKE with wildcards (e.g. %BMW%) for case-insensitive and partial matches, not just ILIKE 'value'."
+    "If a column is not specified by the user, leave it unfiltered."
+    "If the query doesn't specify a limit, use 'LIMIT 100' at the end."
+    "Return only a single SQL SELECT statement."
+)
     resp = client.chat.completions.create(
         model="gpt-4o",
         messages=[
