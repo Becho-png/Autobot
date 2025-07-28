@@ -113,24 +113,20 @@ def gpt_generate_sql(history, schema_hint, openai_api_key):
     return sql
 
 def run_sql(sql):
-    db_url = st.secrets["NEON_DB_URL"]
+    engine = get_engine()
     try:
         if not isinstance(sql, str):
             raise ValueError("SQL query must be a string!")
-        try:
-            df = pd.read_sql(sql, db_url)
-        except Exception as e:
-            import traceback
-            st.error(f"Çalıştırılan SQL: {sql}")
-            st.error("Hata traceback (detaylı):")
-            st.error(traceback.format_exc())
-            raise e
+        with engine.connect() as conn:
+            df = pd.read_sql_query(text(sql), conn)
     except Exception as e:
-        st.error("run_sql fonksiyonunda beklenmedik bir hata oluştu.")
-        st.error(str(e))
+        import traceback
+        st.error(f"Çalıştırılan SQL: {sql}")
+        st.error("Hata traceback (detaylı):")
+        st.error(traceback.format_exc())
         raise e
     return df
-
+    
 def gpt_generate_followup(history, df, schema_hint, openai_api_key):
     client = OpenAI(api_key=openai_api_key)
     df_head = df.head(5).to_dict(orient="records") if not df.empty else []
