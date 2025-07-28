@@ -114,11 +114,14 @@ def gpt_generate_sql(history, schema_hint, openai_api_key):
     return sql
 
 def run_sql(sql):
+    import psycopg2
     db_url = st.secrets["NEON_DB_URL"]
     try:
         if not isinstance(sql, str):
             raise ValueError("SQL query must be a string!")
-        df = pd.read_sql(sql, db_url)
+        conn = psycopg2.connect(db_url)
+        df = pd.read_sql(sql, conn)
+        conn.close()
     except Exception as e:
         import traceback
         st.error(f"Çalıştırılan SQL: {sql}")
