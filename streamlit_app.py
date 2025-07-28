@@ -1,14 +1,10 @@
 import streamlit as st
-from sqlalchemy import create_engine, text
 from openai import OpenAI
 import re
 import hashlib
 import uuid
 import pandas as pd
-
-@st.cache_resource
-def get_engine():
-    return create_engine(st.secrets["NEON_DB_URL"])
+import psycopg2
 
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
@@ -21,7 +17,7 @@ def login_form():
         username = st.text_input("Username").strip().lower()
         password = st.text_input("Password", type="password")
     if st.button(choice):
-        engine = get_engine()
+        db_url = st.secrets["NEON_DB_URL"]
         if choice == "Continue Anonymously":
             anon_id = "anon-" + str(uuid.uuid4())[:12]
             st.session_state["user_id"] = anon_id
@@ -32,32 +28,37 @@ def login_form():
             if not username or not password:
                 st.error("Fill all fields")
                 return
-            with engine.connect() as conn:
-                trans = conn.begin()
-                try:
-                    res = conn.execute(
-                        text("INSERT INTO users (username, password) VALUES (:username, :password) RETURNING user_id;"),
-                        {"username": username, "password": hash_password(password)}
-                    )
-                    user_id = res.scalar()
-                    trans.commit()
-                    st.success("Registered! Please log in.")
-                except Exception as e:
-                    trans.rollback()
-                    if "unique" in str(e).lower():
-                        st.error("Username already exists.")
-                    else:
-                        st.error(f"Registration failed: {e}")
+            try:
+                conn = psycopg2.connect(db_url)
+                cur = conn.cursor()
+                cur.execute(
+                    "INSERT INTO users (username, password) VALUES (%s, %s) RETURNING user_id;",
+                    (username, hash_password(password))
+                )
+                user_id = cur.fetchone()[0]
+                conn.commit()
+                cur.close()
+                conn.close()
+                st.success("Registered! Please log in.")
+            except Exception as e:
+                if "unique" in str(e).lower():
+                    st.error("Username already exists.")
+                else:
+                    st.error(f"Registration failed: {e}")
         else:
             if not username or not password:
                 st.error("Fill all fields")
                 return
-            with engine.connect() as conn:
-                res = conn.execute(
-                    text("SELECT user_id, password FROM users WHERE username = :username;"),
-                    {"username": username}
+            try:
+                conn = psycopg2.connect(db_url)
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT user_id, password FROM users WHERE username = %s;",
+                    (username,)
                 )
-                row = res.fetchone()
+                row = cur.fetchone()
+                cur.close()
+                conn.close()
                 if row and row[1] == hash_password(password):
                     st.session_state["user"] = username
                     st.session_state["user_id"] = row[0]
@@ -65,6 +66,8 @@ def login_form():
                     st.rerun()
                 else:
                     st.error("Invalid login.")
+            except Exception as e:
+                st.error("Login error: " + str(e))
 
 def gpt_generate_sql(history, schema_hint, openai_api_key):
     client = OpenAI(api_key=openai_api_key)
@@ -72,13 +75,13 @@ def gpt_generate_sql(history, schema_hint, openai_api_key):
     system_prompt = (
         f"You are an expert at writing SQL queries for this table:\n"
         f"{schema_hint}\n"
-        "All columns and filter values in the database are in English."
+        "All columns and filter values in the database are in English. "
         "If the user query is in Turkish or contains Turkish car terms (like 'dizel', 'otomatik', 'benzin', 'manuel', 'SUV', 'station', 'sedan'), you must translate those values to English column values: "
         "'dizel'->'diesel', 'benzin'->'gasoline', 'otomatik'->'automatic', 'manuel'->'manual', 'sedan'->'sedan', 'station'->'station', 'suv'->'SUV', etc. "
-        "Always use English values in SQL!"
-        "When filtering text columns (like brand, model, transmission, fueltype, source_file), always use ILIKE with wildcards (e.g. %BMW%) for case-insensitive and partial matches, not just ILIKE 'value'."
-        "If a column is not specified by the user, leave it unfiltered."
-        "If the query doesn't specify a limit, use 'LIMIT 100' at the end."
+        "Always use English values in SQL! "
+        "When filtering text columns (like brand, model, transmission, fueltype, source_file), always use ILIKE with wildcards (e.g. %BMW%) for case-insensitive and partial matches, not just ILIKE 'value'. "
+        "If a column is not specified by the user, leave it unfiltered. "
+        "If the query doesn't specify a limit, use 'LIMIT 100' at the end. "
         "Return only a single SQL SELECT statement."
     )
     resp = client.chat.completions.create(
@@ -114,7 +117,6 @@ def gpt_generate_sql(history, schema_hint, openai_api_key):
     return sql
 
 def run_sql(sql):
-    import psycopg2
     db_url = st.secrets["NEON_DB_URL"]
     try:
         if not isinstance(sql, str):
@@ -272,22 +274,24 @@ if st.session_state["last_df"] is not None:
         model_match = re.search(r"model ILIKE '%([^']+)%'", last_sql, re.IGNORECASE)
         if brand_match:
             brand = brand_match.group(1)
-        if model_match:
-            model = model_match.group(1)
-        if brand:
-            engine = get_engine()
-            similar_models_query = f"""
-                SELECT DISTINCT model 
-                FROM cars
-                WHERE brand ILIKE '%{brand}%'
-                ORDER BY model;
-            """
-            similar_models = pd.read_sql(similar_models_query, st.secrets["NEON_DB_URL"])
-            if not similar_models.empty:
-                st.info(f"{brand.upper()} için mevcut modeller:")
-                st.write(", ".join(similar_models['model'].astype(str).tolist()))
-            else:
-                st.info(f"{brand.upper()} için başka model bulunamadı.")
+            try:
+                conn = psycopg2.connect(st.secrets["NEON_DB_URL"])
+                similar_models_query = f"""
+                    SELECT DISTINCT model 
+                    FROM cars
+                    WHERE brand ILIKE '%{brand}%'
+                    ORDER BY model;
+                """
+                similar_models = pd.read_sql(similar_models_query, conn)
+                conn.close()
+                if not similar_models.empty:
+                    st.info(f"{brand.upper()} için mevcut modeller:")
+                    st.write(", ".join(similar_models['model'].astype(str).tolist()))
+                else:
+                    st.info(f"{brand.upper()} için başka model bulunamadı.")
+            except Exception as e:
+                st.error("Benzer modeller sorgusunda hata oluştu:")
+                st.error(str(e))
         else:
             st.info("Benzer marka/model bulunamadı.")
 
