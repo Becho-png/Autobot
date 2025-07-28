@@ -69,13 +69,13 @@ def gpt_generate_sql(history, schema_hint, openai_api_key):
     client = OpenAI(api_key=openai_api_key)
     full_query = " ".join(history)
     system_prompt = (
-        f"You are an expert at writing SQL queries for this table:\n"
-        f"{schema_hint}\n"
-        "Always return a valid SQL SELECT query using only the 'cars' table, and never use DROP, DELETE, INSERT, UPDATE, or any non-SELECT commands."
-        "If a column is not specified by the user, leave it unfiltered."
-        "When filtering text columns (like brand, model, transmission, fueltype, source_file), always use ILIKE for case-insensitive matches instead of = or LIKE."
-        "If the query doesn't specify a limit, use 'LIMIT 100' at the end."
-    )
+    f"You are an expert at writing SQL queries for this table:\n"
+    f"{schema_hint}\n"
+    "Always return a valid SQL SELECT query using only the 'cars' table, and never use DROP, DELETE, INSERT, UPDATE, or any non-SELECT commands."
+    "If a column is not specified by the user, leave it unfiltered."
+    "When filtering text columns (like brand, model, transmission, fueltype, source_file), always use ILIKE with wildcards (e.g. %BMW%) for case-insensitive and partial matches, not just ILIKE 'value'."
+    "If the query doesn't specify a limit, use 'LIMIT 100' at the end."
+)
     resp = client.chat.completions.create(
         model="gpt-4o",
         messages=[
