@@ -101,10 +101,9 @@ def gpt_generate_sql(history, schema_hint, openai_api_key):
     sql = re.sub(r'\bLIKE\b', 'ILIKE', sql, flags=re.IGNORECASE)
     sql = re.sub(r"model\s+ILIKE\s+'([^']+)'", r"model ILIKE '%\1%'", sql, flags=re.IGNORECASE)
     sql = re.sub(r"brand\s+ILIKE\s+'([^']+)'", r"brand ILIKE '%\1%'", sql, flags=re.IGNORECASE)
-    # <<< SADECE BU PATCH %100 SIKINTIYI ÇÖZER >>>
-    sql = re.findall(r"SELECT[\s\S]+?;", sql, re.IGNORECASE)
-    if sql:
-        sql = sql[0]
+    matches = re.findall(r"SELECT[\s\S]+?;", sql, re.IGNORECASE)
+    if matches:
+        sql = matches[0]
     else:
         raise ValueError("No valid SELECT statement in GPT SQL output!")
     return sql
@@ -112,8 +111,11 @@ def gpt_generate_sql(history, schema_hint, openai_api_key):
 def run_sql(sql):
     engine = get_engine()
     try:
+        if not isinstance(sql, str):
+            raise ValueError("SQL query must be a string!")
         df = pd.read_sql(sql, engine)
     except Exception as e:
+        st.error(f"Çalıştırılan SQL: {sql}")
         raise e
     return df
 
