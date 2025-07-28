@@ -101,8 +101,12 @@ def gpt_generate_sql(history, schema_hint, openai_api_key):
     sql = re.sub(r'\bLIKE\b', 'ILIKE', sql, flags=re.IGNORECASE)
     sql = re.sub(r"model\s+ILIKE\s+'([^']+)'", r"model ILIKE '%\1%'", sql, flags=re.IGNORECASE)
     sql = re.sub(r"brand\s+ILIKE\s+'([^']+)'", r"brand ILIKE '%\1%'", sql, flags=re.IGNORECASE)
-    if ";" in sql:
-        sql = sql.strip().split(";")[0] + ";"
+    # <<< SADECE BU PATCH %100 SIKINTIYI ÇÖZER >>>
+    sql = re.findall(r"SELECT[\s\S]+?;", sql, re.IGNORECASE)
+    if sql:
+        sql = sql[0]
+    else:
+        raise ValueError("No valid SELECT statement in GPT SQL output!")
     return sql
 
 def run_sql(sql):
