@@ -33,15 +33,17 @@ def login_form():
                 st.error("Fill all fields")
                 return
             with engine.connect() as conn:
+                trans = conn.begin()
                 try:
                     res = conn.execute(
                         text("INSERT INTO users (username, password) VALUES (:username, :password) RETURNING user_id;"),
                         {"username": username, "password": hash_password(password)}
                     )
                     user_id = res.scalar()
-                    conn.commit()
+                    trans.commit()
                     st.success("Registered! Please log in.")
                 except Exception as e:
+                    trans.rollback()
                     if "unique" in str(e).lower():
                         st.error("Username already exists.")
                     else:
@@ -101,9 +103,7 @@ def gpt_generate_sql(history, schema_hint, openai_api_key):
     sql = re.sub(r"brand\s+ILIKE\s+'([^']+)'", r"brand ILIKE '%\1%'", sql, flags=re.IGNORECASE)
     if ";" in sql:
         sql = sql.strip().split(";")[0] + ";"
-    # print("Generated SQL:", sql) # Dilersen debug için aç
     return sql
-
 
 def run_sql(sql):
     engine = get_engine()
@@ -191,6 +191,8 @@ if submitted and user_query:
 if st.session_state["last_df"] is not None:
     st.code(st.session_state["last_sql"], language="sql")
     df = st.session_state["last_df"]
+    st.dataframe(df.head(100))
+    
     if df.empty:
         st.warning("Hiçbir araba bulunamadı.")
         last_sql = st.session_state["last_sql"]
@@ -218,9 +220,9 @@ if st.session_state["last_df"] is not None:
                 st.info(f"{brand.upper()} için başka model bulunamadı.")
         else:
             st.info("Benzer marka/model bulunamadı.")
-    else:
-        st.dataframe(df.head(100))
-        openai_api_key = st.secrets["OPENAI_API_KEY"]
+
+    openai_api_key = st.secrets["OPENAI_API_KEY"]
+    if not df.empty:
         with st.spinner("Daha akıllı filtre önerisi hazırlanıyor..."):
             followup = gpt_generate_followup(
                 st.session_state["query_history"], df, schema_hint, openai_api_key
