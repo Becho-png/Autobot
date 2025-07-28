@@ -207,11 +207,9 @@ if submitted and user_query:
         except Exception as e:
             st.error(f"Query failed: {e}")
 
-# Filtreli arama adımlarının tamamı burada
 while st.session_state["last_df"] is not None:
     st.code(st.session_state["last_sql"], language="sql")
     df = st.session_state["last_df"]
-
     openai_api_key = st.secrets["OPENAI_API_KEY"]
     st.dataframe(df.head(100))
 
@@ -233,10 +231,10 @@ while st.session_state["last_df"] is not None:
                         st.session_state["last_sql"] = sql
                         df = run_sql(sql)
                         st.session_state["last_df"] = df
-                        st.experimental_rerun()
+                        st.rerun()
                     except Exception as e:
                         st.error(f"Query failed: {e}")
-            break  # bir sonraki filtre adımına geçmek için döngüden çık
+            break
         else:
             st.success("Daha fazla filtre önerilmiyor. Arama tamamlandı.")
             break
@@ -272,10 +270,8 @@ while st.session_state["last_df"] is not None:
             st.info("Benzer marka/model bulunamadı.")
         break
 
-    # Tablo boşsa veya daha fazla filtre yoksa döngüyü kır
     break
 
-# Sonuçları resetleme butonu
 if st.button("Tüm filtreleri sıfırla"):
     st.session_state["query_history"] = []
     st.session_state["last_sql"] = None
