@@ -117,9 +117,17 @@ def run_sql(sql):
     try:
         if not isinstance(sql, str):
             raise ValueError("SQL query must be a string!")
-        df = pd.read_sql(sql, db_url)
+        try:
+            df = pd.read_sql(sql, db_url)
+        except Exception as e:
+            import traceback
+            st.error(f"Çalıştırılan SQL: {sql}")
+            st.error("Hata traceback (detaylı):")
+            st.error(traceback.format_exc())
+            raise e
     except Exception as e:
-        st.error(f"Çalıştırılan SQL: {sql}")
+        st.error("run_sql fonksiyonunda beklenmedik bir hata oluştu.")
+        st.error(str(e))
         raise e
     return df
 
