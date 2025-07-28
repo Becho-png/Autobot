@@ -47,7 +47,7 @@ def login_form():
                         st.error("Username already exists.")
                     else:
                         st.error(f"Registration failed: {e}")
-        else:  # Login
+        else:
             if not username or not password:
                 st.error("Fill all fields")
                 return
@@ -189,7 +189,6 @@ if st.session_state["last_df"] is not None:
         st.warning("Hiçbir araba bulunamadı.")
     else:
         st.dataframe(df.head(100))
-        # GPT'den follow-up question iste
         openai_api_key = st.secrets["OPENAI_API_KEY"]
         with st.spinner("Daha akıllı filtre önerisi hazırlanıyor..."):
             followup = gpt_generate_followup(
@@ -212,6 +211,33 @@ if st.session_state["last_df"] is not None:
                         st.error(f"Query failed: {e}")
         else:
             st.success("Daha fazla filtre önerilmiyor. Arama tamamlandı.")
+
+    if not df.empty:
+        car_labels = df['brand'].astype(str) + " " + df['model'].astype(str) + " (" + df['year'].astype(str) + ")"
+        selected = st.selectbox(
+            "Tahmini motor hacmi & 0-100 hızlanması görmek için aracı seç:",
+            car_labels
+        )
+        if selected:
+            sel_idx = car_labels[car_labels == selected].index[0]
+            row = df.loc[sel_idx]
+            car_desc = f"{row['brand']} {row['model']} {row['year']}"
+            prompt = (
+                f"Aşağıdaki otomobil için tahmini teknik verileri özetle, sadece gerçekçi ortalama değerlerle yanıtla:\n"
+                f"Marka ve model: {car_desc}\n"
+                f"- Motor hacmi (cc)\n"
+                f"- 0-100 km/s hızlanma süresi (sn)\n"
+                f"Sadece kısa bir tablo olarak yaz. Eğer bilgi yoksa 'Bilinmiyor' yaz."
+            )
+            client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+            with st.spinner("Tahmini teknik veriler çekiliyor..."):
+                resp = client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                gpt_out = resp.choices[0].message.content.strip()
+            st.markdown("**Tahmini teknik veriler (AI):**")
+            st.info(gpt_out)
 
 if st.button("Tüm filtreleri sıfırla"):
     st.session_state["query_history"] = []
