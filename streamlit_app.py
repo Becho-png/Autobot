@@ -1,5 +1,5 @@
 import streamlit as st
-import psycopg2
+from sqlalchemy import create_engine, text
 import os
 from openai import OpenAI
 import re
@@ -8,8 +8,8 @@ import uuid
 import pandas as pd
 
 @st.cache_resource
-def get_connection():
-    return psycopg2.connect(st.secrets["NEON_DB_URL"])
+def get_engine():
+    return create_engine(st.secrets["NEON_DB_URL"])
 
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
@@ -22,6 +22,7 @@ def login_form():
         username = st.text_input("Username").strip().lower()
         password = st.text_input("Password", type="password")
     if st.button(choice):
+        engine = get_engine()
         if choice == "Continue Anonymously":
             anon_id = "anon-" + str(uuid.uuid4())[:12]
             st.session_state["user_id"] = anon_id
@@ -32,40 +33,37 @@ def login_form():
             if not username or not password:
                 st.error("Fill all fields")
                 return
-            conn = get_connection()
-            cur = conn.cursor()
-            try:
-                cur.execute(
-                    "INSERT INTO users (username, password) VALUES (%s, %s) RETURNING user_id;",
-                    (username, hash_password(password))
-                )
-                user_id = cur.fetchone()[0]
-                conn.commit()
-                st.success("Registered! Please log in.")
-            except psycopg2.errors.UniqueViolation:
-                st.error("Username already exists.")
-                conn.rollback()
-            finally:
-                cur.close()
+            with engine.connect() as conn:
+                try:
+                    res = conn.execute(
+                        text("INSERT INTO users (username, password) VALUES (:username, :password) RETURNING user_id;"),
+                        {"username": username, "password": hash_password(password)}
+                    )
+                    user_id = res.scalar()
+                    conn.commit()
+                    st.success("Registered! Please log in.")
+                except Exception as e:
+                    if "unique" in str(e).lower():
+                        st.error("Username already exists.")
+                    else:
+                        st.error(f"Registration failed: {e}")
         else:  # Login
             if not username or not password:
                 st.error("Fill all fields")
                 return
-            conn = get_connection()
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT user_id, password FROM users WHERE username = %s;",
-                (username,)
-            )
-            row = cur.fetchone()
-            cur.close()
-            if row and row[1] == hash_password(password):
-                st.session_state["user"] = username
-                st.session_state["user_id"] = row[0]
-                st.success(f"Welcome {username}")
-                st.rerun()
-            else:
-                st.error("Invalid login.")
+            with engine.connect() as conn:
+                res = conn.execute(
+                    text("SELECT user_id, password FROM users WHERE username = :username;"),
+                    {"username": username}
+                )
+                row = res.fetchone()
+                if row and row[1] == hash_password(password):
+                    st.session_state["user"] = username
+                    st.session_state["user_id"] = row[0]
+                    st.success(f"Welcome {username}")
+                    st.rerun()
+                else:
+                    st.error("Invalid login.")
 
 def gpt_generate_sql(history, schema_hint, openai_api_key):
     client = OpenAI(api_key=openai_api_key)
@@ -102,16 +100,15 @@ def gpt_generate_sql(history, schema_hint, openai_api_key):
     return sql
 
 def run_sql(sql):
-    conn = get_connection()
+    engine = get_engine()
     try:
-        df = pd.read_sql(sql, conn)
+        df = pd.read_sql(sql, engine)
     except Exception as e:
         raise e
     return df
 
 def gpt_generate_followup(history, df, schema_hint, openai_api_key):
     client = OpenAI(api_key=openai_api_key)
-    # 5 örnekten fazlasını GPT'ye vermeye gerek yok
     df_head = df.head(5).to_dict(orient="records") if not df.empty else []
     prompt = (
         f"Given this search context: {' '.join(history)}\n"
