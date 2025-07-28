@@ -106,9 +106,8 @@ def gpt_generate_sql(history, schema_hint, openai_api_key):
         sql = matches[0]
     else:
         raise ValueError("No valid SELECT statement in GPT SQL output!")
-    # --- PATCH: Unicode büyük-eşittir/küçük-eşittir düzeltme ---
+    # PATCH BURADA!
     sql = sql.replace("≥", ">=").replace("≤", "<=")
-    # --- PATCH: Birden fazla % işaretini tek %'e indir ---
     sql = re.sub(r"%{2,}", "%", sql)
     return sql
 
