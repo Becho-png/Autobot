@@ -197,36 +197,7 @@ if submitted and user_query:
 if st.session_state["last_df"] is not None:
     st.code(st.session_state["last_sql"], language="sql")
     df = st.session_state["last_df"]
-    st.dataframe(df.head(100))
     
-    if df.empty:
-        st.warning("Hiçbir araba bulunamadı.")
-        last_sql = st.session_state["last_sql"]
-        brand = None
-        model = None
-        brand_match = re.search(r"brand ILIKE '%([^']+)%'", last_sql, re.IGNORECASE)
-        model_match = re.search(r"model ILIKE '%([^']+)%'", last_sql, re.IGNORECASE)
-        if brand_match:
-            brand = brand_match.group(1)
-        if model_match:
-            model = model_match.group(1)
-        if brand:
-            engine = get_engine()
-            similar_models_query = f"""
-                SELECT DISTINCT model 
-                FROM cars
-                WHERE brand ILIKE '%{brand}%'
-                ORDER BY model;
-            """
-            similar_models = pd.read_sql(similar_models_query, engine)
-            if not similar_models.empty:
-                st.info(f"{brand.upper()} için mevcut modeller:")
-                st.write(", ".join(similar_models['model'].astype(str).tolist()))
-            else:
-                st.info(f"{brand.upper()} için başka model bulunamadı.")
-        else:
-            st.info("Benzer marka/model bulunamadı.")
-
     openai_api_key = st.secrets["OPENAI_API_KEY"]
     if not df.empty:
         with st.spinner("Daha akıllı filtre önerisi hazırlanıyor..."):
@@ -277,6 +248,35 @@ if st.session_state["last_df"] is not None:
                 gpt_out = resp.choices[0].message.content.strip()
             st.markdown("**Tahmini teknik veriler (AI):**")
             st.info(gpt_out)
+
+        st.dataframe(df.head(100))
+    else:
+        st.warning("Hiçbir araba bulunamadı.")
+        last_sql = st.session_state["last_sql"]
+        brand = None
+        model = None
+        brand_match = re.search(r"brand ILIKE '%([^']+)%'", last_sql, re.IGNORECASE)
+        model_match = re.search(r"model ILIKE '%([^']+)%'", last_sql, re.IGNORECASE)
+        if brand_match:
+            brand = brand_match.group(1)
+        if model_match:
+            model = model_match.group(1)
+        if brand:
+            engine = get_engine()
+            similar_models_query = f"""
+                SELECT DISTINCT model 
+                FROM cars
+                WHERE brand ILIKE '%{brand}%'
+                ORDER BY model;
+            """
+            similar_models = pd.read_sql(similar_models_query, engine)
+            if not similar_models.empty:
+                st.info(f"{brand.upper()} için mevcut modeller:")
+                st.write(", ".join(similar_models['model'].astype(str).tolist()))
+            else:
+                st.info(f"{brand.upper()} için başka model bulunamadı.")
+        else:
+            st.info("Benzer marka/model bulunamadı.")
 
 if st.button("Tüm filtreleri sıfırla"):
     st.session_state["query_history"] = []
