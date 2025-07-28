@@ -1,6 +1,5 @@
 import streamlit as st
 from sqlalchemy import create_engine, text
-import os
 from openai import OpenAI
 import re
 import hashlib
@@ -69,13 +68,13 @@ def gpt_generate_sql(history, schema_hint, openai_api_key):
     client = OpenAI(api_key=openai_api_key)
     full_query = " ".join(history)
     system_prompt = (
-    f"You are an expert at writing SQL queries for this table:\n"
-    f"{schema_hint}\n"
-    "Always return a valid SQL SELECT query using only the 'cars' table, and never use DROP, DELETE, INSERT, UPDATE, or any non-SELECT commands."
-    "If a column is not specified by the user, leave it unfiltered."
-    "When filtering text columns (like brand, model, transmission, fueltype, source_file), always use ILIKE with wildcards (e.g. %BMW%) for case-insensitive and partial matches, not just ILIKE 'value'."
-    "If the query doesn't specify a limit, use 'LIMIT 100' at the end."
-)
+        f"You are an expert at writing SQL queries for this table:\n"
+        f"{schema_hint}\n"
+        "Always return a valid SQL SELECT query using only the 'cars' table, and never use DROP, DELETE, INSERT, UPDATE, or any non-SELECT commands."
+        "If a column is not specified by the user, leave it unfiltered."
+        "When filtering text columns (like brand, model, transmission, fueltype, source_file), always use ILIKE with wildcards (e.g. %BMW%) for case-insensitive and partial matches, not just ILIKE 'value'."
+        "If the query doesn't specify a limit, use 'LIMIT 100' at the end."
+    )
     resp = client.chat.completions.create(
         model="gpt-4o",
         messages=[
@@ -97,6 +96,10 @@ def gpt_generate_sql(history, schema_hint, openai_api_key):
     if "limit" not in sql.lower():
         sql = sql.rstrip(";") + " LIMIT 100;"
     sql = re.sub(r'\bLIKE\b', 'ILIKE', sql, flags=re.IGNORECASE)
+    sql = re.sub(r"model\s+ILIKE\s+'([^']+)'", r"model ILIKE '%\1%'", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"brand\s+ILIKE\s+'([^']+)'", r"brand ILIKE '%\1%'", sql, flags=re.IGNORECASE)
+    if ";" in sql:
+        sql = sql.strip().split(";")[0] + ";"
     return sql
 
 def run_sql(sql):
@@ -187,6 +190,31 @@ if st.session_state["last_df"] is not None:
     df = st.session_state["last_df"]
     if df.empty:
         st.warning("Hiçbir araba bulunamadı.")
+        last_sql = st.session_state["last_sql"]
+        brand = None
+        model = None
+        brand_match = re.search(r"brand ILIKE '%([^']+)%'", last_sql, re.IGNORECASE)
+        model_match = re.search(r"model ILIKE '%([^']+)%'", last_sql, re.IGNORECASE)
+        if brand_match:
+            brand = brand_match.group(1)
+        if model_match:
+            model = model_match.group(1)
+        if brand:
+            engine = get_engine()
+            similar_models_query = f"""
+                SELECT DISTINCT model 
+                FROM cars
+                WHERE brand ILIKE '%{brand}%'
+                ORDER BY model;
+            """
+            similar_models = pd.read_sql(similar_models_query, engine)
+            if not similar_models.empty:
+                st.info(f"{brand.upper()} için mevcut modeller:")
+                st.write(", ".join(similar_models['model'].astype(str).tolist()))
+            else:
+                st.info(f"{brand.upper()} için başka model bulunamadı.")
+        else:
+            st.info("Benzer marka/model bulunamadı.")
     else:
         st.dataframe(df.head(100))
         openai_api_key = st.secrets["OPENAI_API_KEY"]
