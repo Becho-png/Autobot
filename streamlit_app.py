@@ -7,22 +7,19 @@ import hashlib
 import uuid
 import pandas as pd
 
-# --- CACHED DB CONNECTION (Neon/Postgres) ---
 @st.cache_resource
 def get_connection():
     return psycopg2.connect(st.secrets["NEON_DB_URL"])
 
-# --- Password Hashing ---
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
-# --- Login/Register Form ---
 def login_form():
     st.title("Login / Register / Anonymous")
     choice = st.radio("Choose action", ["Login", "Register", "Continue Anonymously"])
     username = password = ""
     if choice in ["Login", "Register"]:
-        username = st.text_input("Username")
+        username = st.text_input("Username").strip().lower()
         password = st.text_input("Password", type="password")
     if st.button(choice):
         if choice == "Continue Anonymously":
@@ -50,7 +47,6 @@ def login_form():
                 conn.rollback()
             finally:
                 cur.close()
-            # do NOT close cached conn
         else:  # Login
             if not username or not password:
                 st.error("Fill all fields")
@@ -71,9 +67,9 @@ def login_form():
             else:
                 st.error("Invalid login.")
 
-# --- GPT-to-SQL Generation (with safety, markdown cleaning, limit check) ---
-def gpt_generate_sql(user_query, schema_hint, openai_api_key):
+def gpt_generate_sql(history, schema_hint, openai_api_key):
     client = OpenAI(api_key=openai_api_key)
+    full_query = " ".join(history)
     system_prompt = (
         f"You are an expert at writing SQL queries for this table:\n"
         f"{schema_hint}\n"
@@ -86,11 +82,10 @@ def gpt_generate_sql(user_query, schema_hint, openai_api_key):
         model="gpt-4o",
         messages=[
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_query},
+            {"role": "user", "content": full_query},
         ]
     )
     sql_raw = resp.choices[0].message.content.strip()
-    # Remove code block and extract SELECT
     sql_match = re.search(r"(SELECT[\s\S]+?;)", sql_raw, re.IGNORECASE)
     if sql_match:
         sql = sql_match.group(1)
@@ -103,11 +98,9 @@ def gpt_generate_sql(user_query, schema_hint, openai_api_key):
         raise ValueError("GPT returned a non-SELECT query. Blocked for safety.")
     if "limit" not in sql.lower():
         sql = sql.rstrip(";") + " LIMIT 100;"
-    # This line makes LIKE case-insensitive!
     sql = re.sub(r'\bLIKE\b', 'ILIKE', sql, flags=re.IGNORECASE)
     return sql
 
-# --- Run SQL ---
 def run_sql(sql):
     conn = get_connection()
     try:
@@ -116,10 +109,37 @@ def run_sql(sql):
         raise e
     return df
 
-# --- Streamlit App ---
+def gpt_generate_followup(history, df, schema_hint, openai_api_key):
+    client = OpenAI(api_key=openai_api_key)
+    # 5 örnekten fazlasını GPT'ye vermeye gerek yok
+    df_head = df.head(5).to_dict(orient="records") if not df.empty else []
+    prompt = (
+        f"Given this search context: {' '.join(history)}\n"
+        f"Result sample: {df_head}\n"
+        f"Table schema: {schema_hint}\n"
+        "Suggest one follow-up question (in Turkish) to further filter or narrow the search. Be context-aware. "
+        "If there is no more useful filtering to ask, just say 'Daha fazla filtrelemeye gerek yok.'"
+    )
+    resp = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": prompt},
+        ]
+    )
+    followup = resp.choices[0].message.content.strip()
+    return followup
+
 if "user_id" not in st.session_state:
     login_form()
     st.stop()
+
+if "query_history" not in st.session_state:
+    st.session_state["query_history"] = []
+if "last_sql" not in st.session_state:
+    st.session_state["last_sql"] = None
+if "last_df" not in st.session_state:
+    st.session_state["last_df"] = None
 
 top_left, top_right = st.columns([0.85, 0.15])
 with top_right:
@@ -127,7 +147,7 @@ with top_right:
         st.session_state.clear()
         st.rerun()
 
-st.title("AutoBot - Car Search by AI")
+st.title("AutoBot - Adım Adım Akıllı Araba Arama 🚗🤖")
 st.write(f"👤 Logged in as: `{st.session_state.get('user', '')}`")
 
 schema_hint = """
@@ -144,21 +164,60 @@ Columns:
 """
 
 st.markdown(
-    "Ask me to search cars! Example: `Show me all BMWs under 500000 with less than 100000 km after 2018`."
+    "Sorgunu yaz: `10k'dan yüksek BMW'ler`, `2018 sonrası dizel Audi`, vs. Sonra AI sana ek filtre soracak. Her adımda daha fazla filtreleyebilirsin!"
 )
 
-user_query = st.text_input("What kind of car do you want to search?")
+with st.form("first_search", clear_on_submit=True):
+    user_query = st.text_input("Araba sorgusu gir:", key="main_query")
+    submitted = st.form_submit_button("Ara")
 
-if user_query:
+if submitted and user_query:
+    st.session_state["query_history"] = [user_query]
+    st.session_state["last_sql"] = None
+    st.session_state["last_df"] = None
     openai_api_key = st.secrets["OPENAI_API_KEY"]
-    with st.spinner("Thinking..."):
+    with st.spinner("GPT sorgu oluşturuyor..."):
         try:
-            sql = gpt_generate_sql(user_query, schema_hint, openai_api_key)
-            st.code(sql, language="sql")
+            sql = gpt_generate_sql(st.session_state["query_history"], schema_hint, openai_api_key)
+            st.session_state["last_sql"] = sql
             df = run_sql(sql)
-            if df.empty:
-                st.warning("No cars found matching your criteria.")
-            else:
-                st.dataframe(df.head(100))  # Only show first 100
+            st.session_state["last_df"] = df
         except Exception as e:
             st.error(f"Query failed: {e}")
+
+if st.session_state["last_df"] is not None:
+    st.code(st.session_state["last_sql"], language="sql")
+    df = st.session_state["last_df"]
+    if df.empty:
+        st.warning("Hiçbir araba bulunamadı.")
+    else:
+        st.dataframe(df.head(100))
+        # GPT'den follow-up question iste
+        openai_api_key = st.secrets["OPENAI_API_KEY"]
+        with st.spinner("Daha akıllı filtre önerisi hazırlanıyor..."):
+            followup = gpt_generate_followup(
+                st.session_state["query_history"], df, schema_hint, openai_api_key
+            )
+        if followup != "Daha fazla filtrelemeye gerek yok.":
+            st.markdown(f"**AI'nin filtre sorusu:** {followup}")
+            with st.form("filter_step", clear_on_submit=True):
+                user_filter = st.text_input("Ek filtrele:", key="next_filter")
+                filter_submitted = st.form_submit_button("Filtrele")
+            if filter_submitted and user_filter:
+                st.session_state["query_history"].append(user_filter)
+                with st.spinner("Yeni filtreyle arama yapılıyor..."):
+                    try:
+                        sql = gpt_generate_sql(st.session_state["query_history"], schema_hint, openai_api_key)
+                        st.session_state["last_sql"] = sql
+                        df = run_sql(sql)
+                        st.session_state["last_df"] = df
+                    except Exception as e:
+                        st.error(f"Query failed: {e}")
+        else:
+            st.success("Daha fazla filtre önerilmiyor. Arama tamamlandı.")
+
+if st.button("Tüm filtreleri sıfırla"):
+    st.session_state["query_history"] = []
+    st.session_state["last_sql"] = None
+    st.session_state["last_df"] = None
+    st.rerun()
