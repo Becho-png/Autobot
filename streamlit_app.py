@@ -74,6 +74,7 @@ def gpt_generate_sql(history, schema_hint, openai_api_key):
         "If a column is not specified by the user, leave it unfiltered."
         "When filtering text columns (like brand, model, transmission, fueltype, source_file), always use ILIKE with wildcards (e.g. %BMW%) for case-insensitive and partial matches, not just ILIKE 'value'."
         "If the query doesn't specify a limit, use 'LIMIT 100' at the end."
+        "Return only a single SQL SELECT statement."
     )
     resp = client.chat.completions.create(
         model="gpt-4o",
@@ -100,7 +101,9 @@ def gpt_generate_sql(history, schema_hint, openai_api_key):
     sql = re.sub(r"brand\s+ILIKE\s+'([^']+)'", r"brand ILIKE '%\1%'", sql, flags=re.IGNORECASE)
     if ";" in sql:
         sql = sql.strip().split(";")[0] + ";"
+    # print("Generated SQL:", sql) # Dilersen debug için aç
     return sql
+
 
 def run_sql(sql):
     engine = get_engine()
