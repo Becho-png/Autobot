@@ -69,18 +69,18 @@ def login_form():
 def gpt_generate_sql(history, schema_hint, openai_api_key):
     client = OpenAI(api_key=openai_api_key)
     full_query = " ".join(history)
-system_prompt = (
-    f"You are an expert at writing SQL queries for this table:\n"
-    f"{schema_hint}\n"
-    "All columns and filter values in the database are in English."
-    "If the user query is in Turkish or contains Turkish car terms (like 'dizel', 'otomatik', 'benzin', 'manuel', 'SUV', 'station', 'sedan'), you must translate those values to English column values: "
-    "'dizel'->'diesel', 'benzin'->'gasoline', 'otomatik'->'automatic', 'manuel'->'manual', 'sedan'->'sedan', 'station'->'station', 'suv'->'SUV', etc. "
-    "Always use English values in SQL!"
-    "When filtering text columns (like brand, model, transmission, fueltype, source_file), always use ILIKE with wildcards (e.g. %BMW%) for case-insensitive and partial matches, not just ILIKE 'value'."
-    "If a column is not specified by the user, leave it unfiltered."
-    "If the query doesn't specify a limit, use 'LIMIT 100' at the end."
-    "Return only a single SQL SELECT statement."
-)
+    system_prompt = (
+        f"You are an expert at writing SQL queries for this table:\n"
+        f"{schema_hint}\n"
+        "All columns and filter values in the database are in English."
+        "If the user query is in Turkish or contains Turkish car terms (like 'dizel', 'otomatik', 'benzin', 'manuel', 'SUV', 'station', 'sedan'), you must translate those values to English column values: "
+        "'dizel'->'diesel', 'benzin'->'gasoline', 'otomatik'->'automatic', 'manuel'->'manual', 'sedan'->'sedan', 'station'->'station', 'suv'->'SUV', etc. "
+        "Always use English values in SQL!"
+        "When filtering text columns (like brand, model, transmission, fueltype, source_file), always use ILIKE with wildcards (e.g. %BMW%) for case-insensitive and partial matches, not just ILIKE 'value'."
+        "If a column is not specified by the user, leave it unfiltered."
+        "If the query doesn't specify a limit, use 'LIMIT 100' at the end."
+        "Return only a single SQL SELECT statement."
+    )
     resp = client.chat.completions.create(
         model="gpt-4o",
         messages=[
@@ -109,19 +109,16 @@ system_prompt = (
         sql = matches[0]
     else:
         raise ValueError("No valid SELECT statement in GPT SQL output!")
-    # Unicode büyük-eşittir/küçük-eşittir karakterlerini düzelt
     sql = sql.replace("≥", ">=").replace("≤", "<=")
-    # Birden fazla % işaretini normalize et
     sql = re.sub(r"%{2,}", "%", sql)
     return sql
 
 def run_sql(sql):
-    engine = get_engine()
+    db_url = st.secrets["NEON_DB_URL"]
     try:
         if not isinstance(sql, str):
             raise ValueError("SQL query must be a string!")
-        with engine.connect() as conn:
-            df = pd.read_sql_query(text(sql), conn)
+        df = pd.read_sql(sql, db_url)
     except Exception as e:
         import traceback
         st.error(f"Çalıştırılan SQL: {sql}")
@@ -129,7 +126,7 @@ def run_sql(sql):
         st.error(traceback.format_exc())
         raise e
     return df
-    
+
 def gpt_generate_followup(history, df, schema_hint, openai_api_key):
     client = OpenAI(api_key=openai_api_key)
     df_head = df.head(5).to_dict(orient="records") if not df.empty else []
