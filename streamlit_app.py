@@ -197,8 +197,9 @@ if submitted and user_query:
 if st.session_state["last_df"] is not None:
     st.code(st.session_state["last_sql"], language="sql")
     df = st.session_state["last_df"]
-    
+
     openai_api_key = st.secrets["OPENAI_API_KEY"]
+    filter_applied = False
     if not df.empty:
         with st.spinner("Daha akıllı filtre önerisi hazırlanıyor..."):
             followup = gpt_generate_followup(
@@ -217,11 +218,16 @@ if st.session_state["last_df"] is not None:
                         st.session_state["last_sql"] = sql
                         df = run_sql(sql)
                         st.session_state["last_df"] = df
+                        filter_applied = True
                     except Exception as e:
                         st.error(f"Query failed: {e}")
         else:
             st.success("Daha fazla filtre önerilmiyor. Arama tamamlandı.")
 
+    # TABLO HEMEN EK FİLTRENİN ALTINDA
+    st.dataframe(df.head(100))
+    
+    # TABLONUN ALTINDA SELECTBOX
     if not df.empty:
         car_labels = df['brand'].astype(str) + " " + df['model'].astype(str) + " (" + df['year'].astype(str) + ")"
         selected = st.selectbox(
@@ -248,8 +254,6 @@ if st.session_state["last_df"] is not None:
                 gpt_out = resp.choices[0].message.content.strip()
             st.markdown("**Tahmini teknik veriler (AI):**")
             st.info(gpt_out)
-
-        st.dataframe(df.head(100))
     else:
         st.warning("Hiçbir araba bulunamadı.")
         last_sql = st.session_state["last_sql"]
