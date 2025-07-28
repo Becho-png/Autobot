@@ -113,7 +113,8 @@ def run_sql(sql):
     try:
         if not isinstance(sql, str):
             raise ValueError("SQL query must be a string!")
-        df = pd.read_sql(sql, engine)
+        with engine.connect() as conn:
+            df = pd.read_sql(sql, conn)
     except Exception as e:
         st.error(f"Çalıştırılan SQL: {sql}")
         raise e
@@ -224,10 +225,8 @@ if st.session_state["last_df"] is not None:
         else:
             st.success("Daha fazla filtre önerilmiyor. Arama tamamlandı.")
 
-    # TABLO HEMEN EK FİLTRENİN ALTINDA
     st.dataframe(df.head(100))
     
-    # TABLONUN ALTINDA SELECTBOX
     if not df.empty:
         car_labels = df['brand'].astype(str) + " " + df['model'].astype(str) + " (" + df['year'].astype(str) + ")"
         selected = st.selectbox(
