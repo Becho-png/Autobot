@@ -299,33 +299,38 @@ elif search_mode == "Fotoğraftan Bul (Görsel Analiz)":
         st.image(image_bytes, caption="Yüklediğiniz fotoğraf")
         client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
         prompt = "Bu fotoğraftaki arabanın markası ve modeli nedir? Sadece marka ve model yaz."
-        vision_result = client.chat.completions.create(
-            model="gpt-4-vision-preview",
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()}},
-                ]
-            }]
-        )
-        result_text = vision_result.choices[0].message.content.strip()
-        st.info(f"AI Tespiti: {result_text}")
+        model_name = "gpt-4o"  # veya "gpt-4-vision-preview"
+        try:
+            vision_result = client.chat.completions.create(
+                model=model_name,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()}},
+                    ]
+                }]
+            )
+            result_text = vision_result.choices[0].message.content.strip()
+            st.info(f"AI Tespiti: {result_text}")
 
-        marka_model = result_text.split()
-        marka = marka_model[0] if len(marka_model) > 0 else ""
-        model = marka_model[1] if len(marka_model) > 1 else ""
-        if marka and model:
-            sql = f"SELECT * FROM cars WHERE brand ILIKE '%{marka}%' AND model ILIKE '%{model}%' LIMIT 10;"
-            df = run_sql(sql)
-            if not df.empty:
-                st.dataframe(df)
-            else:
-                sql_similar = f"SELECT DISTINCT model FROM cars WHERE brand ILIKE '%{marka}%' ORDER BY model;"
-                similar = run_sql(sql_similar)
-                if not similar.empty:
-                    st.info(f"{marka.upper()} için benzer modeller: {', '.join(similar['model'].astype(str).tolist())}")
+            marka_model = result_text.split()
+            marka = marka_model[0] if len(marka_model) > 0 else ""
+            model = marka_model[1] if len(marka_model) > 1 else ""
+            if marka and model:
+                sql = f"SELECT * FROM cars WHERE brand ILIKE '%{marka}%' AND model ILIKE '%{model}%' LIMIT 10;"
+                df = run_sql(sql)
+                if not df.empty:
+                    st.dataframe(df)
                 else:
-                    st.warning(f"Veritabanında {marka.upper()} ile ilgili hiçbir model bulunamadı.")
-        else:
-            st.warning("Marka ve model tanımlanamadı. AI çıktısı:", icon="⚠️")
+                    sql_similar = f"SELECT DISTINCT model FROM cars WHERE brand ILIKE '%{marka}%' ORDER BY model;"
+                    similar = run_sql(sql_similar)
+                    if not similar.empty:
+                        st.info(f"{marka.upper()} için benzer modeller: {', '.join(similar['model'].astype(str).tolist())}")
+                    else:
+                        st.warning(f"Veritabanında {marka.upper()} ile ilgili hiçbir model bulunamadı.")
+            else:
+                st.warning("Marka ve model tanımlanamadı. AI çıktısı:", icon="⚠️")
+        except Exception as e:
+            st.error("OpenAI Vision API hatası:")
+            st.error(str(e))
