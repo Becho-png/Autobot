@@ -5,6 +5,7 @@ import hashlib
 import uuid
 import pandas as pd
 import psycopg2
+import base64
 
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
@@ -73,17 +74,17 @@ def gpt_generate_sql(history, schema_hint, openai_api_key):
     client = OpenAI(api_key=openai_api_key)
     full_query = " ".join(history)
     system_prompt = (
-    f"You are an expert at writing SQL queries for this table:\n"
-    f"{schema_hint}\n"
-    "fueltype values in the database are only 'petrol' or 'diesel'. "
-    "If the user query is in Turkish or contains Turkish car terms (like 'dizel', 'benzin', 'otomatik', 'manuel'), you must translate those values to the exact column values: "
-    "'dizel'->'diesel', 'benzin'->'petrol', 'otomatik'->'automatic', 'manuel'->'manual'. "
-    "Always use the correct column values in SQL! "
-    "When filtering text columns (like brand, model, transmission, fueltype, source_file), always use ILIKE with wildcards (for example: fueltype ILIKE '%petrol%') for case-insensitive and partial matches, never use = or LIKE for text columns. Only use ILIKE with wildcards for all text columns. "
-    "If a column is not specified by the user, leave it unfiltered."
-    "If the query doesn't specify a limit, use 'LIMIT 100' at the end."
-    "Return only a single SQL SELECT statement."
-)
+        f"You are an expert at writing SQL queries for this table:\n"
+        f"{schema_hint}\n"
+        "fueltype values in the database are only 'petrol' or 'diesel'. "
+        "If the user query is in Turkish or contains Turkish car terms (like 'dizel', 'benzin', 'otomatik', 'manuel'), you must translate those values to the exact column values: "
+        "'dizel'->'diesel', 'benzin'->'petrol', 'otomatik'->'automatic', 'manuel'->'manual'. "
+        "Always use the correct column values in SQL! "
+        "When filtering text columns (like brand, model, transmission, fueltype, source_file), always use ILIKE with wildcards (for example: fueltype ILIKE '%petrol%') for case-insensitive and partial matches, never use = or LIKE for text columns. Only use ILIKE with wildcards for all text columns. "
+        "If a column is not specified by the user, leave it unfiltered."
+        "If the query doesn't specify a limit, use 'LIMIT 100' at the end."
+        "Return only a single SQL SELECT statement."
+    )
     resp = client.chat.completions.create(
         model="gpt-4o",
         messages=[
@@ -107,6 +108,12 @@ def gpt_generate_sql(history, schema_hint, openai_api_key):
     sql = re.sub(r'\bLIKE\b', 'ILIKE', sql, flags=re.IGNORECASE)
     sql = re.sub(r"model\s+ILIKE\s+'([^']+)'", r"model ILIKE '%\1%'", sql, flags=re.IGNORECASE)
     sql = re.sub(r"brand\s+ILIKE\s+'([^']+)'", r"brand ILIKE '%\1%'", sql, flags=re.IGNORECASE)
+    sql = re.sub(
+        r"(fueltype)\s*=\s*'([^']+)'",
+        r"\1 ILIKE '%\2%'",
+        sql,
+        flags=re.IGNORECASE
+    )
     matches = re.findall(r"SELECT[\s\S]+?;", sql, re.IGNORECASE)
     if matches:
         sql = matches[0]
@@ -156,124 +163,169 @@ if "user_id" not in st.session_state:
     login_form()
     st.stop()
 
-if "query_history" not in st.session_state:
-    st.session_state["query_history"] = []
-if "last_sql" not in st.session_state:
-    st.session_state["last_sql"] = None
-if "last_df" not in st.session_state:
-    st.session_state["last_df"] = None
-
-top_left, top_right = st.columns([0.85, 0.15])
-with top_right:
-    if st.button("Logout"):
-        st.session_state.clear()
-        st.rerun()
-
-st.title("AutoBot - Adım Adım Akıllı Araba Arama 🚗🤖")
-st.write(f"👤 Logged in as: `{st.session_state.get('user', '')}`")
-
-schema_hint = """
-Table name: cars
-Columns:
-- brand (text)
-- model (text)
-- year (integer)
-- transmission (text)
-- mileage (integer)
-- fueltype (text)
-- price (integer)
-- source_file (text)
-"""
-
-st.markdown(
-    "Sorgunu yaz: `10k'dan yüksek BMW'ler`, `2018 sonrası dizel Audi`, vs. Sonra AI sana ek filtre soracak. Her adımda daha fazla filtreleyebilirsin!"
+search_mode = st.radio(
+    "Arama türü seç:",
+    ["Yazılı Sorgu (Filtrelerle)", "Fotoğraftan Bul (Görsel Analiz)"]
 )
 
-with st.form("first_search", clear_on_submit=True):
-    user_query = st.text_input("Araba sorgusu gir:", key="main_query")
-    submitted = st.form_submit_button("Ara")
+if search_mode == "Yazılı Sorgu (Filtrelerle)":
+    if "query_history" not in st.session_state:
+        st.session_state["query_history"] = []
+    if "last_sql" not in st.session_state:
+        st.session_state["last_sql"] = None
+    if "last_df" not in st.session_state:
+        st.session_state["last_df"] = None
 
-if submitted and user_query:
-    st.session_state["query_history"] = [user_query]
-    st.session_state["last_sql"] = None
-    st.session_state["last_df"] = None
-    openai_api_key = st.secrets["OPENAI_API_KEY"]
-    with st.spinner("GPT sorgu oluşturuyor..."):
-        try:
-            sql = gpt_generate_sql(st.session_state["query_history"], schema_hint, openai_api_key)
-            st.session_state["last_sql"] = sql
-            df = run_sql(sql)
-            st.session_state["last_df"] = df
-        except Exception as e:
-            st.error(f"Query failed: {e}")
+    top_left, top_right = st.columns([0.85, 0.15])
+    with top_right:
+        if st.button("Logout"):
+            st.session_state.clear()
+            st.rerun()
 
-while st.session_state["last_df"] is not None:
-    st.code(st.session_state["last_sql"], language="sql")
-    df = st.session_state["last_df"]
-    openai_api_key = st.secrets["OPENAI_API_KEY"]
-    st.dataframe(df.head(100))
+    st.title("AutoBot - Adım Adım Akıllı Araba Arama 🚗🤖")
+    st.write(f"👤 Logged in as: `{st.session_state.get('user', '')}`")
 
-    if not df.empty:
-        with st.spinner("Daha akıllı filtre önerisi hazırlanıyor..."):
-            followup = gpt_generate_followup(
-                st.session_state["query_history"], df, schema_hint, openai_api_key
-            )
-        if followup != "Daha fazla filtrelemeye gerek yok.":
-            st.markdown(f"**AI'nin filtre sorusu:** {followup}")
-            with st.form(f"filter_step_{len(st.session_state['query_history'])}", clear_on_submit=True):
-                user_filter = st.text_input("Ek filtrele:", key=f"{len(st.session_state['query_history'])}_next_filter")
-                filter_submitted = st.form_submit_button("Filtrele")
-            if filter_submitted and user_filter:
-                st.session_state["query_history"].append(user_filter)
-                with st.spinner("Yeni filtreyle arama yapılıyor..."):
-                    try:
-                        sql = gpt_generate_sql(st.session_state["query_history"], schema_hint, openai_api_key)
-                        st.session_state["last_sql"] = sql
-                        df = run_sql(sql)
-                        st.session_state["last_df"] = df
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Query failed: {e}")
-            break
-        else:
-            st.success("Daha fazla filtre önerilmiyor. Arama tamamlandı.")
-            break
+    schema_hint = """
+    Table name: cars
+    Columns:
+    - brand (text)
+    - model (text)
+    - year (integer)
+    - transmission (text)
+    - mileage (integer)
+    - fueltype (text)
+    - price (integer)
+    - source_file (text)
+    """
 
-    else:
-        st.warning("Hiçbir araba bulunamadı.")
-        last_sql = st.session_state["last_sql"]
-        brand = None
-        model = None
-        brand_match = re.search(r"brand ILIKE '%([^']+)%'", last_sql, re.IGNORECASE)
-        model_match = re.search(r"model ILIKE '%([^']+)%'", last_sql, re.IGNORECASE)
-        if brand_match:
-            brand = brand_match.group(1)
+    st.markdown(
+        "Sorgunu yaz: `10k'dan yüksek BMW'ler`, `2018 sonrası dizel Audi`, vs. Sonra AI sana ek filtre soracak. Her adımda daha fazla filtreleyebilirsin!"
+    )
+
+    with st.form("first_search", clear_on_submit=True):
+        user_query = st.text_input("Araba sorgusu gir:", key="main_query")
+        submitted = st.form_submit_button("Ara")
+
+    if submitted and user_query:
+        st.session_state["query_history"] = [user_query]
+        st.session_state["last_sql"] = None
+        st.session_state["last_df"] = None
+        openai_api_key = st.secrets["OPENAI_API_KEY"]
+        with st.spinner("GPT sorgu oluşturuyor..."):
             try:
-                conn = psycopg2.connect(st.secrets["NEON_DB_URL"])
-                similar_models_query = f"""
-                    SELECT DISTINCT model 
-                    FROM cars
-                    WHERE brand ILIKE '%{brand}%'
-                    ORDER BY model;
-                """
-                similar_models = pd.read_sql(similar_models_query, conn)
-                conn.close()
-                if not similar_models.empty:
-                    st.info(f"{brand.upper()} için mevcut modeller:")
-                    st.write(", ".join(similar_models['model'].astype(str).tolist()))
-                else:
-                    st.info(f"{brand.upper()} için başka model bulunamadı.")
+                sql = gpt_generate_sql(st.session_state["query_history"], schema_hint, openai_api_key)
+                st.session_state["last_sql"] = sql
+                df = run_sql(sql)
+                st.session_state["last_df"] = df
             except Exception as e:
-                st.error("Benzer modeller sorgusunda hata oluştu:")
-                st.error(str(e))
+                st.error(f"Query failed: {e}")
+
+    while st.session_state["last_df"] is not None:
+        st.code(st.session_state["last_sql"], language="sql")
+        df = st.session_state["last_df"]
+        openai_api_key = st.secrets["OPENAI_API_KEY"]
+        st.dataframe(df.head(100))
+
+        if not df.empty:
+            with st.spinner("Daha akıllı filtre önerisi hazırlanıyor..."):
+                followup = gpt_generate_followup(
+                    st.session_state["query_history"], df, schema_hint, openai_api_key
+                )
+            if followup != "Daha fazla filtrelemeye gerek yok.":
+                st.markdown(f"**AI'nin filtre sorusu:** {followup}")
+                with st.form(f"filter_step_{len(st.session_state['query_history'])}", clear_on_submit=True):
+                    user_filter = st.text_input("Ek filtrele:", key=f"{len(st.session_state['query_history'])}_next_filter")
+                    filter_submitted = st.form_submit_button("Filtrele")
+                if filter_submitted and user_filter:
+                    st.session_state["query_history"].append(user_filter)
+                    with st.spinner("Yeni filtreyle arama yapılıyor..."):
+                        try:
+                            sql = gpt_generate_sql(st.session_state["query_history"], schema_hint, openai_api_key)
+                            st.session_state["last_sql"] = sql
+                            df = run_sql(sql)
+                            st.session_state["last_df"] = df
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Query failed: {e}")
+                break
+            else:
+                st.success("Daha fazla filtre önerilmiyor. Arama tamamlandı.")
+                break
+
         else:
-            st.info("Benzer marka/model bulunamadı.")
+            st.warning("Hiçbir araba bulunamadı.")
+            last_sql = st.session_state["last_sql"]
+            brand = None
+            model = None
+            brand_match = re.search(r"brand ILIKE '%([^']+)%'", last_sql, re.IGNORECASE)
+            model_match = re.search(r"model ILIKE '%([^']+)%'", last_sql, re.IGNORECASE)
+            if brand_match:
+                brand = brand_match.group(1)
+                try:
+                    conn = psycopg2.connect(st.secrets["NEON_DB_URL"])
+                    similar_models_query = f"""
+                        SELECT DISTINCT model 
+                        FROM cars
+                        WHERE brand ILIKE '%{brand}%'
+                        ORDER BY model;
+                    """
+                    similar_models = pd.read_sql(similar_models_query, conn)
+                    conn.close()
+                    if not similar_models.empty:
+                        st.info(f"{brand.upper()} için mevcut modeller:")
+                        st.write(", ".join(similar_models['model'].astype(str).tolist()))
+                    else:
+                        st.info(f"{brand.upper()} için başka model bulunamadı.")
+                except Exception as e:
+                    st.error("Benzer modeller sorgusunda hata oluştu:")
+                    st.error(str(e))
+            else:
+                st.info("Benzer marka/model bulunamadı.")
+            break
+
         break
 
-    break
+    if st.button("Tüm filtreleri sıfırla"):
+        st.session_state["query_history"] = []
+        st.session_state["last_sql"] = None
+        st.session_state["last_df"] = None
+        st.rerun()
 
-if st.button("Tüm filtreleri sıfırla"):
-    st.session_state["query_history"] = []
-    st.session_state["last_sql"] = None
-    st.session_state["last_df"] = None
-    st.rerun()
+elif search_mode == "Fotoğraftan Bul (Görsel Analiz)":
+    st.title("Fotoğraftan Araba Tanı ve DB Arama")
+    uploaded_file = st.file_uploader("Araba fotoğrafı yükle:", type=["jpg", "jpeg", "png"])
+    if uploaded_file:
+        image_bytes = uploaded_file.read()
+        st.image(image_bytes, caption="Yüklediğiniz fotoğraf")
+        client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+        prompt = "Bu fotoğraftaki arabanın markası ve modeli nedir? Sadece marka ve model yaz."
+        vision_result = client.chat.completions.create(
+            model="gpt-4-vision-preview",
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()}},
+                ]
+            }]
+        )
+        result_text = vision_result.choices[0].message.content.strip()
+        st.info(f"AI Tespiti: {result_text}")
+
+        marka_model = result_text.split()
+        marka = marka_model[0] if len(marka_model) > 0 else ""
+        model = marka_model[1] if len(marka_model) > 1 else ""
+        if marka and model:
+            sql = f"SELECT * FROM cars WHERE brand ILIKE '%{marka}%' AND model ILIKE '%{model}%' LIMIT 10;"
+            df = run_sql(sql)
+            if not df.empty:
+                st.dataframe(df)
+            else:
+                sql_similar = f"SELECT DISTINCT model FROM cars WHERE brand ILIKE '%{marka}%' ORDER BY model;"
+                similar = run_sql(sql_similar)
+                if not similar.empty:
+                    st.info(f"{marka.upper()} için benzer modeller: {', '.join(similar['model'].astype(str).tolist())}")
+                else:
+                    st.warning(f"Veritabanında {marka.upper()} ile ilgili hiçbir model bulunamadı.")
+        else:
+            st.warning("Marka ve model tanımlanamadı. AI çıktısı:", icon="⚠️")
